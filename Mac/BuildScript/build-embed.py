@@ -1,40 +1,7 @@
 #!/usr/bin/env python
 """
-This script is used to build "official" universal installers on macOS.
-
-NEW for 3.10 and backports:
-- support universal2 variant with arm64 and x86_64 archs
-- enable clang optimizations when building on 10.15+
-
-NEW for 3.9.0 and backports:
-- 2.7 end-of-life issues:
-    - Python 3 installs now update the Current version link
-      in /Library/Frameworks/Python.framework/Versions
-- fully support running under Python 3 as well as 2.7
-- support building on newer macOS systems with SIP
-- fully support building on macOS 10.9+
-- support 10.6+ on best effort
-- support bypassing docs build by supplying a prebuilt
-    docs html tarball in the third-party source library,
-    in the format and filename conventional of those
-    downloadable from python.org:
-        python-3.x.y-docs-html.tar.bz2
-
-NEW for 3.7.0:
-- support Intel 64-bit-only () and 32-bit-only installer builds
-- build and use internal Tcl/Tk 8.6 for 10.6+ builds
-- deprecate use of explicit SDK (--sdk-path=) since all but the oldest
-  versions of Xcode support implicit setting of an SDK via environment
-  variables (SDKROOT and friends, see the xcrun man page for more info).
-  The SDK stuff was primarily needed for building universal installers
-  for 10.4; so as of 3.7.0, building installers for 10.4 is no longer
-  supported with build-installer.
-- use generic "gcc" as compiler (CC env var) rather than "gcc-4.2"
-
-TODO:
-- test building with SDKROOT and DEVELOPER_DIR xcrun env variables
-
-Usage: see USAGE variable in the script.
+скрипт для сборки unix-like дистрибутива python
+со всеми необходимыми модулями (openssl, tcl/tk, sqlite3 и пр.)
 """
 import platform, os, sys, getopt, textwrap, shutil, stat, time, pwd, grp
 try:
@@ -113,7 +80,8 @@ FW_VERSION_PREFIX = "--undefined--" # initialized in parseOptions
 FW_SSL_DIRECTORY = "--undefined--" # initialized in parseOptions
 
 # The directory we'll use to create the build (will be erased and recreated)
-WORKDIR = "/tmp/_py"
+WORKDIR = "/tmp/_py_embed"
+OUTDIR = os.path.join(WORKDIR, '_out')
 
 # The directory we'll use to store third-party sources. Set this to something
 # else if you don't want to re-fetch required libraries every time.
@@ -278,13 +246,13 @@ def library_recipes():
               configure_pre=[
                     '--enable-shared',
                     '--enable-threads',
-                    '--libdir=/Library/Frameworks/Python.framework/Versions/%s/lib'%(getVersion(),),
+                    '--libdir=%s/lib' % OUTDIR,
               ],
               useLDFlags=False,
               buildrecipe=tweak_tcl_build,
               install='make TCL_LIBRARY=%(TCL_LIBRARY)s && make install TCL_LIBRARY=%(TCL_LIBRARY)s DESTDIR=%(DESTDIR)s'%{
                   "DESTDIR": shellQuote(os.path.join(WORKDIR, 'libraries')),
-                  "TCL_LIBRARY": shellQuote('/Library/Frameworks/Python.framework/Versions/%s/lib/tcl8.6'%(getVersion())),
+                  "TCL_LIBRARY": shellQuote('%s/lib/tcl8.6' % OUTDIR),
                   },
               ),
           dict(
@@ -297,17 +265,16 @@ def library_recipes():
                     '--enable-aqua',
                     '--enable-shared',
                     '--enable-threads',
-                    '--libdir=/Library/Frameworks/Python.framework/Versions/%s/lib'%(getVersion(),),
+                    '--libdir=%s/lib' % OUTDIR,
               ],
               useLDFlags=False,
               install='make TCL_LIBRARY=%(TCL_LIBRARY)s TK_LIBRARY=%(TK_LIBRARY)s && make install TCL_LIBRARY=%(TCL_LIBRARY)s TK_LIBRARY=%(TK_LIBRARY)s DESTDIR=%(DESTDIR)s'%{
                   "DESTDIR": shellQuote(os.path.join(WORKDIR, 'libraries')),
-                  "TCL_LIBRARY": shellQuote('/Library/Frameworks/Python.framework/Versions/%s/lib/tcl8.6'%(getVersion())),
-                  "TK_LIBRARY": shellQuote('/Library/Frameworks/Python.framework/Versions/%s/lib/tk8.6'%(getVersion())),
+                  "TCL_LIBRARY": shellQuote('%s/lib/tcl8.6' % OUTDIR),
+                  "TK_LIBRARY": shellQuote('%s/lib/tk8.6' % OUTDIR),
                   },
-                ),
+          ),
         ])
-
     if PYTHON_3:
         result.extend([
           dict(
@@ -342,17 +309,15 @@ def library_recipes():
                   "--sharedstatedir=/usr/com",
                   "--with-terminfo-dirs=/usr/share/terminfo",
                   "--with-default-terminfo-dir=/usr/share/terminfo",
-                  "--libdir=/Library/Frameworks/Python.framework/Versions/%s/lib"%(getVersion(),),
+                  "--libdir=%s/lib"%(OUTDIR,),
               ],
               patchscripts=[
                   ("ftp://ftp.invisible-island.net/ncurses//5.9/ncurses-5.9-20120616-patch.sh.bz2",
                    "f54bf02a349f96a7c4f0d00922f3a0d4"),
                    ],
               useLDFlags=False,
-              install='make && make install DESTDIR=%s && cd %s/usr/local/lib && ln -fs ../../../Library/Frameworks/Python.framework/Versions/%s/lib/lib* .'%(
+              install='make && make install DESTDIR=%s'%(
                   shellQuote(os.path.join(WORKDIR, 'libraries')),
-                  shellQuote(os.path.join(WORKDIR, 'libraries')),
-                  getVersion(),
                   ),
           ),
           dict(
@@ -373,7 +338,7 @@ def library_recipes():
                   '--enable-static=yes',
                   '--disable-readline',
                   '--disable-dependency-tracking',
-              ]
+              ],
           ),
         ])
 
@@ -387,101 +352,12 @@ def library_recipes():
               configure="../dist/configure",
               configure_pre=[
                   '--includedir=/usr/local/include/db4',
-              ]
+              ],
           ),
         ])
 
     return result
 
-
-# Instructions for building packages inside the .mpkg.
-def pkg_recipes():
-    unselected_for_python3 = ('selected', 'unselected')[PYTHON_3]
-    result = [
-        dict(
-            name="PythonFramework",
-            long_name="Python Framework",
-            source="/Library/Frameworks/Python.framework",
-            readme="""\
-                This package installs Python.framework, that is the python
-                interpreter and the standard library.
-            """,
-            postflight="scripts/postflight.framework",
-            selected='selected',
-        ),
-        dict(
-            name="PythonApplications",
-            long_name="GUI Applications",
-            source="/Applications/Python %(VER)s",
-            readme="""\
-                This package installs IDLE (an interactive Python IDE),
-                Python Launcher and Build Applet (create application bundles
-                from python scripts).
-
-                It also installs a number of examples and demos.
-                """,
-            required=False,
-            selected='selected',
-        ),
-        dict(
-            name="PythonUnixTools",
-            long_name="UNIX command-line tools",
-            source="/usr/local/bin",
-            readme="""\
-                This package installs the unix tools in /usr/local/bin for
-                compatibility with older releases of Python. This package
-                is not necessary to use Python.
-                """,
-            required=False,
-            selected='selected',
-        ),
-        dict(
-            name="PythonDocumentation",
-            long_name="Python Documentation",
-            topdir="/Library/Frameworks/Python.framework/Versions/%(VER)s/Resources/English.lproj/Documentation",
-            source="/pydocs",
-            readme="""\
-                This package installs the python documentation at a location
-                that is usable for pydoc and IDLE.
-                """,
-            postflight="scripts/postflight.documentation",
-            required=False,
-            selected='selected',
-        ),
-        dict(
-            name="PythonProfileChanges",
-            long_name="Shell profile updater",
-            readme="""\
-                This packages updates your shell profile to make sure that
-                the Python tools are found by your shell in preference of
-                the system provided Python tools.
-
-                If you don't install this package you'll have to add
-                "/Library/Frameworks/Python.framework/Versions/%(VER)s/bin"
-                to your PATH by hand.
-                """,
-            postflight="scripts/postflight.patch-profile",
-            topdir="/Library/Frameworks/Python.framework",
-            source="/empty-dir",
-            required=False,
-            selected='selected',
-        ),
-        dict(
-            name="PythonInstallPip",
-            long_name="Install or upgrade pip",
-            readme="""\
-                This package installs (or upgrades from an earlier version)
-                pip, a tool for installing and managing Python packages.
-                """,
-            postflight="scripts/postflight.ensurepip",
-            topdir="/Library/Frameworks/Python.framework",
-            source="/empty-dir",
-            required=False,
-            selected='selected',
-        ),
-    ]
-
-    return result
 
 def fatal(msg):
     """
@@ -694,7 +570,7 @@ def parseOptions(args=None):
     print("   * C compiler:          %s" % CC)
     print("   * C++ compiler:        %s" % CXX)
     print("")
-    print(" -- Building a Python %s framework at patch level %s"
+    print(" -- Building a Python %s embed at patch level %s"
                 % (getVersion(), getFullVersion()))
     print("")
 
@@ -829,8 +705,8 @@ def build_universal_openssl(basedir, archList):
             "no-ssl3",
             # "enable-unit-test",
             "shared",
-            "--prefix=%s"%os.path.join("/", *FW_VERSION_PREFIX),
-            "--openssldir=%s"%os.path.join("/", *FW_SSL_DIRECTORY),
+            "--prefix=%s"%os.path.join(OUTDIR),
+            "--openssldir=%s"%os.path.join(OUTDIR),
         ]
         if no_asm:
             configure_opts.append("no-asm")
@@ -846,7 +722,7 @@ def build_universal_openssl(basedir, archList):
     universalbase = os.path.join(srcdir, "..",
                         os.path.basename(srcdir) + "-universal")
     os.mkdir(universalbase)
-    archbasefws = []
+    archbases = []
     for arch in archList:
         # fresh copy of the source tree
         archsrc = os.path.join(universalbase, arch, "src")
@@ -854,23 +730,18 @@ def build_universal_openssl(basedir, archList):
         # install base for this arch
         archbase = os.path.join(universalbase, arch, "root")
         os.mkdir(archbase)
-        # Python framework base within install_prefix:
-        # the build will install into this framework..
-        # This is to ensure that the resulting shared libs have
-        # the desired real install paths built into them.
-        archbasefw = os.path.join(archbase, *FW_VERSION_PREFIX)
 
         # build one architecture
         os.chdir(archsrc)
         build_openssl_arch(archbase, arch)
         os.chdir(srcdir)
-        archbasefws.append(archbasefw)
+        archbases.append(archbase)
 
     # copy arch-independent files from last build into the basedir framework
-    basefw = os.path.join(basedir, *FW_VERSION_PREFIX)
+    base = os.path.join(basedir)
     shutil.copytree(
-            os.path.join(archbasefw, "include", "openssl"),
-            os.path.join(basefw, "include", "openssl")
+            os.path.join(archbase, *OUTDIR.split("/"), "include", "openssl"),
+            os.path.join(base, *OUTDIR.split(os.path.sep), "include", "openssl")
             )
 
     shlib_version_number = grepValue(os.path.join(archsrc, "Makefile"),
@@ -883,29 +754,35 @@ def build_universal_openssl(basedir, archList):
     libssl_versioned = libssl.replace(".", "."+shlib_version_number+".")
     #   e.g. -> "libssl.1.0.0.dylib"
 
-    try:
-        os.mkdir(os.path.join(basefw, "lib"))
-    except OSError:
-        pass
+    paths_to_create = [
+        os.path.join(base, *OUTDIR.split("/"), "lib"),
+        #os.path.join(OUTDIR, "lib"),
+        #os.path.join(OUTDIR, "include")
+    ]
+    for path in paths_to_create:
+        try:
+            os.mkdir(path)
+        except OSError:
+            pass
 
     # merge the individual arch-dependent shared libs into a fat shared lib
-    archbasefws.insert(0, basefw)
+    archbases.insert(0, base)
     for (lib_unversioned, lib_versioned) in [
                 (libcrypto, libcrypto_versioned),
                 (libssl, libssl_versioned)
             ]:
         runCommand("lipo -create -output " +
-                    " ".join(shellQuote(
-                            os.path.join(fw, "lib", lib_versioned))
-                                    for fw in archbasefws))
+                   " ".join(shellQuote(
+                            os.path.join(fw, *OUTDIR.split("/"), "lib", lib_versioned))
+                            for fw in archbases))
         # and create an unversioned symlink of it
-        os.symlink(lib_versioned, os.path.join(basefw, "lib", lib_unversioned))
+        os.symlink(lib_versioned, os.path.join(base, *OUTDIR.split("/"), "lib", lib_unversioned))
 
     # Create links in the temp include and lib dirs that will be injected
     # into the Python build so that setup.py can find them while building
     # and the versioned links so that the setup.py post-build import test
     # does not fail.
-    relative_path = os.path.join("..", "..", "..", *FW_VERSION_PREFIX)
+    relative_path = os.path.join("..", "..", "..", *OUTDIR.split("/"))
     for fn in [
             ["include", "openssl"],
             ["lib", libcrypto],
@@ -1051,76 +928,35 @@ def buildLibraries():
     os.mkdir(universal)
     os.makedirs(os.path.join(universal, 'usr', 'local', 'lib'))
     os.makedirs(os.path.join(universal, 'usr', 'local', 'include'))
-
     for recipe in library_recipes():
         buildRecipe(recipe, universal, ARCHLIST)
+    libraries_postbuild()
 
 
+def libraries_postbuild():
 
-def buildPythonDocs():
-    # This stores the documentation as Resources/English.lproj/Documentation
-    # inside the framework. pydoc and IDLE will pick it up there.
-    print("Install python documentation")
-    rootDir = os.path.join(WORKDIR, '_root')
-    buildDir = os.path.join('../../Doc')
-    docdir = os.path.join(rootDir, 'pydocs')
-    curDir = os.getcwd()
-    os.chdir(buildDir)
-    runCommand('make clean')
+    libs_path = os.path.join(WORKDIR, 'libraries')
 
-    # Search third-party source directory for a pre-built version of the docs.
-    #   Use the naming convention of the docs.python.org html downloads:
-    #       python-3.9.0b1-docs-html.tar.bz2
-    doctarfiles = [ f for f in os.listdir(DEPSRC)
-        if f.startswith('python-'+getFullVersion())
-        if f.endswith('-docs-html.tar.bz2') ]
-    if doctarfiles:
-        doctarfile = doctarfiles[0]
-        if not os.path.exists('build'):
-            os.mkdir('build')
-        # if build directory existed, it was emptied by make clean, above
-        os.chdir('build')
-        # Extract the first archive found for this version into build
-        runCommand('tar xjf %s'%shellQuote(os.path.join(DEPSRC, doctarfile)))
-        # see if tar extracted a directory ending in -docs-html
-        archivefiles = [ f for f in os.listdir('.')
-            if f.endswith('-docs-html')
-            if os.path.isdir(f) ]
-        if archivefiles:
-            archivefile = archivefiles[0]
-            # make it our 'Docs/build/html' directory
-            print(' -- using pre-built python documentation from %s'%archivefile)
-            os.rename(archivefile, 'html')
-        os.chdir(buildDir)
+    if os.path.exists(libs_path):
+        print("Copying required shared libraries & includes")
+        build_lib_dir = os.path.join(libs_path, *OUTDIR.split("/"))
+        shutil.copytree(build_lib_dir, OUTDIR, symlinks=True)
 
-    htmlDir = os.path.join('build', 'html')
-    if not os.path.exists(htmlDir):
-        # Create virtual environment for docs builds with blurb and sphinx
-        runCommand('make venv')
-        runCommand('make html PYTHON=venv/bin/python')
-    os.rename(htmlDir, docdir)
-    os.chdir(curDir)
-
+    # create directory for OpenSSL certificates
+    ssl_dir = os.path.join(OUTDIR, 'etc', 'openssl')
+    os.makedirs(ssl_dir)
 
 def buildPython():
     print("Building a universal python for %s architectures" % UNIVERSALARCHS)
 
     buildDir = os.path.join(WORKDIR, '_bld', 'python')
-    rootDir = os.path.join(WORKDIR, '_root')
+    rootDir = OUTDIR
 
     if os.path.exists(buildDir):
         shutil.rmtree(buildDir)
-    if os.path.exists(rootDir):
-        shutil.rmtree(rootDir)
-    os.makedirs(buildDir)
-    os.makedirs(rootDir)
-    os.makedirs(os.path.join(rootDir, 'empty-dir'))
-    curdir = os.getcwd()
-    os.chdir(buildDir)
 
-    # Extract the version from the configure file, needed to calculate
-    # several paths.
-    version = getVersion()
+    os.makedirs(buildDir)
+    os.chdir(buildDir)
 
     # Since the extra libs are not in their installed framework location
     # during the build, augment the library path so that the interpreter
@@ -1129,19 +965,20 @@ def buildPython():
     print("Running configure...")
     runCommand("%s -C --enable-universalsdk=/ "
                "--with-universal-archs=%s "
+               "--prefix=%s "
                "%s "
                "%s "
                "%s "
                "%s "
                "%s "
-               "%s "
+               "--enable-shared "
                "LDFLAGS='-g -L%s/libraries/usr/local/lib' "
-               "CFLAGS='-g -I%s/libraries/usr/local/include' 2>&1"%(
+               "CFLAGS='-g -I%s/libraries/usr/local/include' 2>&1" % (
         shellQuote(os.path.join(SRCDIR, 'configure')),
         UNIVERSALARCHS,
+        rootDir,
         (' ', '--with-computed-gotos ')[PYTHON_3],
         (' ', '--with-ensurepip=install ')[PYTHON_3],
-        (' ', '--with-virtualvenv ')[PYTHON_3],
         (' ', "--with-openssl='%s/libraries/usr/local'"%(
                             shellQuote(WORKDIR)[1:-1],))[PYTHON_3],
         (' ', "--with-tcltk-includes='-I%s/libraries/usr/local/include'"%(
@@ -1165,8 +1002,8 @@ def buildPython():
             " RUNSHARED=",
             "'",
             grepValue("Makefile", "RUNSHARED"),
-            ' DYLD_LIBRARY_PATH=',
-            os.path.join(WORKDIR, 'libraries', 'usr', 'local', 'lib'),
+            #' DYLD_LIBRARY_PATH=',
+            #os.path.join(WORKDIR, 'libraries', 'usr', 'local', 'lib'),
             "'" ])
 
     # Look for environment value BUILDINSTALLER_BUILDPYTHON_MAKE_EXTRAS
@@ -1189,49 +1026,24 @@ def buildPython():
     print("Running " + make_cmd)
     runCommand(make_cmd)
 
-    make_cmd = "make install DESTDIR=%s %s"%(
-        shellQuote(rootDir),
-        runshared_for_make)
+    make_cmd = "make altinstall"
+        #shellQuote(rootDir),
+        #runshared_for_make)
     print("Running " + make_cmd)
     runCommand(make_cmd)
 
-    make_cmd = "make frameworkinstallextras DESTDIR=%s %s"%(
-        shellQuote(rootDir),
-        runshared_for_make)
-    print("Running " + make_cmd)
-    runCommand(make_cmd)
 
-    print("Copying required shared libraries")
-    if os.path.exists(os.path.join(WORKDIR, 'libraries', 'Library')):
-        build_lib_dir = os.path.join(
-                WORKDIR, 'libraries', 'Library', 'Frameworks',
-                'Python.framework', 'Versions', getVersion(), 'lib')
-        fw_lib_dir = os.path.join(
-                WORKDIR, '_root', 'Library', 'Frameworks',
-                'Python.framework', 'Versions', getVersion(), 'lib')
-        if internalTk():
-            # move Tcl and Tk pkgconfig files
-            runCommand("mv %s/pkgconfig/* %s/pkgconfig"%(
-                        shellQuote(build_lib_dir),
-                        shellQuote(fw_lib_dir) ))
-            runCommand("rm -r %s/pkgconfig"%(
-                        shellQuote(build_lib_dir), ))
-        runCommand("mv %s/* %s"%(
-                    shellQuote(build_lib_dir),
-                    shellQuote(fw_lib_dir) ))
+def python_postbuild():
+    curdir = os.getcwd()
 
-    frmDir = os.path.join(rootDir, 'Library', 'Frameworks', 'Python.framework')
-    frmDirVersioned = os.path.join(frmDir, 'Versions', version)
-    path_to_lib = os.path.join(frmDirVersioned, 'lib', 'python%s'%(version,))
-    # create directory for OpenSSL certificates
-    sslDir = os.path.join(frmDirVersioned, 'etc', 'openssl')
-    os.makedirs(sslDir)
-
+    buildDir = os.path.join(WORKDIR, '_bld', 'python')
+    embed_lib_dir = os.path.join(OUTDIR, 'lib')
+    path_to_lib = os.path.join(embed_lib_dir, "python%s" % (getVersion()))
     print("Fix file modes")
     gid = grp.getgrnam('admin').gr_gid
 
     shared_lib_error = False
-    for dirpath, dirnames, filenames in os.walk(frmDir):
+    for dirpath, dirnames, filenames in os.walk(OUTDIR):
         for dn in dirnames:
             os.chmod(os.path.join(dirpath, dn), STAT_0o775)
             os.chown(os.path.join(dirpath, dn), -1, gid)
@@ -1352,167 +1164,8 @@ def buildPython():
     pprint.pprint(vars, stream=fp)
     fp.close()
 
-    # Add symlinks in /usr/local/bin, using relative links
-    usr_local_bin = os.path.join(rootDir, 'usr', 'local', 'bin')
-    to_framework = os.path.join('..', '..', '..', 'Library', 'Frameworks',
-            'Python.framework', 'Versions', version, 'bin')
-    if os.path.exists(usr_local_bin):
-        shutil.rmtree(usr_local_bin)
-    os.makedirs(usr_local_bin)
-    for fn in os.listdir(
-                os.path.join(frmDir, 'Versions', version, 'bin')):
-        os.symlink(os.path.join(to_framework, fn),
-                   os.path.join(usr_local_bin, fn))
-
     os.chdir(curdir)
 
-def patchFile(inPath, outPath):
-    data = fileContents(inPath)
-    data = data.replace('$FULL_VERSION', getFullVersion())
-    data = data.replace('$VERSION', getVersion())
-    data = data.replace('$MACOSX_DEPLOYMENT_TARGET', ''.join((DEPTARGET, ' or later')))
-    data = data.replace('$ARCHITECTURES', ", ".join(universal_opts_map[UNIVERSALARCHS]))
-    data = data.replace('$INSTALL_SIZE', installSize())
-    data = data.replace('$THIRD_PARTY_LIBS', "\\\n".join(THIRD_PARTY_LIBS))
-
-    # This one is not handy as a template variable
-    data = data.replace('$PYTHONFRAMEWORKINSTALLDIR', '/Library/Frameworks/Python.framework')
-    fp = open(outPath, 'w')
-    fp.write(data)
-    fp.close()
-
-def patchScript(inPath, outPath):
-    major, minor = getVersionMajorMinor()
-    data = fileContents(inPath)
-    data = data.replace('@PYMAJOR@', str(major))
-    data = data.replace('@PYVER@', getVersion())
-    fp = open(outPath, 'w')
-    fp.write(data)
-    fp.close()
-    os.chmod(outPath, STAT_0o755)
-
-
-
-def packageFromRecipe(targetDir, recipe):
-    curdir = os.getcwd()
-    try:
-        # The major version (such as 2.5) is included in the package name
-        # because having two version of python installed at the same time is
-        # common.
-        pkgname = '%s-%s'%(recipe['name'], getVersion())
-        srcdir  = recipe.get('source')
-        pkgroot = recipe.get('topdir', srcdir)
-        postflight = recipe.get('postflight')
-        readme = textwrap.dedent(recipe['readme'])
-        isRequired = recipe.get('required', True)
-
-        print("- building package %s"%(pkgname,))
-
-        # Substitute some variables
-        textvars = dict(
-            VER=getVersion(),
-            FULLVER=getFullVersion(),
-        )
-        readme = readme % textvars
-
-        if pkgroot is not None:
-            pkgroot = pkgroot % textvars
-        else:
-            pkgroot = '/'
-
-        if srcdir is not None:
-            srcdir = os.path.join(WORKDIR, '_root', srcdir[1:])
-            srcdir = srcdir % textvars
-
-        if postflight is not None:
-            postflight = os.path.abspath(postflight)
-
-        packageContents = os.path.join(targetDir, pkgname + '.pkg', 'Contents')
-        os.makedirs(packageContents)
-
-        if srcdir is not None:
-            os.chdir(srcdir)
-            runCommand("pax -wf %s . 2>&1"%(shellQuote(os.path.join(packageContents, 'Archive.pax')),))
-            runCommand("gzip -9 %s 2>&1"%(shellQuote(os.path.join(packageContents, 'Archive.pax')),))
-            runCommand("mkbom . %s 2>&1"%(shellQuote(os.path.join(packageContents, 'Archive.bom')),))
-
-        fn = os.path.join(packageContents, 'PkgInfo')
-        fp = open(fn, 'w')
-        fp.write('pmkrpkg1')
-        fp.close()
-
-        rsrcDir = os.path.join(packageContents, "Resources")
-        os.mkdir(rsrcDir)
-        fp = open(os.path.join(rsrcDir, 'ReadMe.txt'), 'w')
-        fp.write(readme)
-        fp.close()
-
-        if postflight is not None:
-            patchScript(postflight, os.path.join(rsrcDir, 'postflight'))
-
-        vers = getFullVersion()
-        major, minor = getVersionMajorMinor()
-        pl = dict(
-                CFBundleGetInfoString="Python.%s %s"%(pkgname, vers,),
-                CFBundleIdentifier='org.python.Python.%s'%(pkgname,),
-                CFBundleName='Python.%s'%(pkgname,),
-                CFBundleShortVersionString=vers,
-                IFMajorVersion=major,
-                IFMinorVersion=minor,
-                IFPkgFormatVersion=0.10000000149011612,
-                IFPkgFlagAllowBackRev=False,
-                IFPkgFlagAuthorizationAction="RootAuthorization",
-                IFPkgFlagDefaultLocation=pkgroot,
-                IFPkgFlagFollowLinks=True,
-                IFPkgFlagInstallFat=True,
-                IFPkgFlagIsRequired=isRequired,
-                IFPkgFlagOverwritePermissions=False,
-                IFPkgFlagRelocatable=False,
-                IFPkgFlagRestartAction="NoRestart",
-                IFPkgFlagRootVolumeOnly=True,
-                IFPkgFlagUpdateInstalledLangauges=False,
-            )
-        writePlist(pl, os.path.join(packageContents, 'Info.plist'))
-
-        pl = dict(
-                    IFPkgDescriptionDescription=readme,
-                    IFPkgDescriptionTitle=recipe.get('long_name', "Python.%s"%(pkgname,)),
-                    IFPkgDescriptionVersion=vers,
-                )
-        writePlist(pl, os.path.join(packageContents, 'Resources', 'Description.plist'))
-
-    finally:
-        os.chdir(curdir)
-
-
-def installSize(clear=False, _saved=[]):
-    if clear:
-        del _saved[:]
-    if not _saved:
-        data = captureCommand("du -ks %s"%(
-                    shellQuote(os.path.join(WORKDIR, '_root'))))
-        _saved.append("%d"%((0.5 + (int(data.split()[0]) / 1024.0)),))
-    return _saved[0]
-
-
-def setIcon(filePath, icnsPath):
-    """
-    Set the custom icon for the specified file or directory.
-    """
-
-    dirPath = os.path.normpath(os.path.dirname(__file__))
-    toolPath = os.path.join(dirPath, "seticon.app/Contents/MacOS/seticon")
-    if not os.path.exists(toolPath) or os.stat(toolPath).st_mtime < os.stat(dirPath + '/seticon.m').st_mtime:
-        # NOTE: The tool is created inside an .app bundle, otherwise it won't work due
-        # to connections to the window server.
-        appPath = os.path.join(dirPath, "seticon.app/Contents/MacOS")
-        if not os.path.exists(appPath):
-            os.makedirs(appPath)
-        runCommand("cc -o %s %s/seticon.m -framework Cocoa"%(
-            shellQuote(toolPath), shellQuote(dirPath)))
-
-    runCommand("%s %s %s"%(shellQuote(os.path.abspath(toolPath)), shellQuote(icnsPath),
-        shellQuote(filePath)))
 
 def main():
     # First parse options and check if we can perform our work
@@ -1531,9 +1184,10 @@ def main():
 
     # Then build third-party libraries such as sleepycat DB4.
     buildLibraries()
-
+    libraries_postbuild()
     # Now build python itself
     buildPython()
+    python_postbuild()
 
     # And then build the documentation
     # Remove the Deployment Target from the shell
@@ -1542,22 +1196,6 @@ def main():
     # when Sphinx and its dependencies need to
     # be (re-)installed.
     del os.environ['MACOSX_DEPLOYMENT_TARGET']
-    buildPythonDocs()
-
-
-    # Prepare the applications folder
-    folder = os.path.join(WORKDIR, "_root", "Applications", "Python %s"%(
-        getVersion(),))
-    fn = os.path.join(folder, "License.rtf")
-    patchFile("resources/License.rtf",  fn)
-    fn = os.path.join(folder, "ReadMe.rtf")
-    patchFile("resources/ReadMe.rtf",  fn)
-    fn = os.path.join(folder, "Update Shell Profile.command")
-    patchScript("scripts/postflight.patch-profile",  fn)
-    fn = os.path.join(folder, "Install Certificates.command")
-    patchScript("resources/install_certificates.command",  fn)
-    os.chmod(folder, STAT_0o755)
-    setIcon(folder, "../Icons/Python Folder.icns")
 
 
 if __name__ == "__main__":
