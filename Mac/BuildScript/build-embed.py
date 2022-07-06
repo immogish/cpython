@@ -942,6 +942,8 @@ def libraries_postbuild():
     if os.path.exists(libs_path):
         print("Copying required shared libraries & includes")
         build_lib_dir = os.path.join(libs_path, *OUTDIR.split("/"))
+        if os.path.isdir(OUTDIR):
+            shutil.rmtree(OUTDIR)
         shutil.copytree(build_lib_dir, OUTDIR, symlinks=True)
 
     # create directory for OpenSSL certificates
